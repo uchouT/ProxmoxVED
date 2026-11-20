@@ -2,7 +2,7 @@
 
 # Copyright (c) 2021-2026 community-scripts ORG
 # Author: MickLesk (CanbiZ)
-# License: MIT | https://github.com/community-scripts/ProxmoxVED/raw/main/LICENSE
+# License: MIT | https://github.com/community-scripts/DevScripts/raw/main/LICENSE
 # Source: https://github.com/stoatchat/stoatchat
 
 source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
@@ -16,6 +16,7 @@ update_os
 msg_info "Installing Dependencies"
 $STD apt install -y \
   pkg-config \
+  libdav1d-dev \
   libssl-dev \
   build-essential \
   git \
@@ -29,7 +30,8 @@ setup_mongodb
 msg_info "Configuring RabbitMQ"
 systemctl enable -q --now rabbitmq-server
 until rabbitmqctl status &>/dev/null; do sleep 1; done
-$STD rabbitmqctl add_user rabbituser rabbitpass
+RABBIT_PASS=$(random_password 24)
+$STD rabbitmqctl add_user rabbituser "$RABBIT_PASS"
 $STD rabbitmqctl set_permissions -p / rabbituser ".*" ".*" ".*"
 msg_ok "Configured RabbitMQ"
 
@@ -67,10 +69,8 @@ $STD pnpm --filter "@lingui-solid/babel-plugin-extract-messages" build
 $STD pnpm --filter client exec lingui compile --typescript
 $STD pnpm --filter client exec node scripts/copyAssets.mjs
 $STD pnpm --filter client exec panda codegen
-VITE_API_URL="http://${LOCAL_IP}/api" \
-  VITE_WS_URL="ws://${LOCAL_IP}/ws" \
-  VITE_MEDIA_URL="http://${LOCAL_IP}/autumn" \
-  VITE_PROXY_URL="http://${LOCAL_IP}/january" \
+VITE_API_URL="https://${LOCAL_IP}/api" \
+  VITE_HOST="${LOCAL_IP}" \
   $STD pnpm --filter client exec vite build
 msg_ok "Built Web Frontend"
 
@@ -147,17 +147,17 @@ mongodb = "mongodb://127.0.0.1:27017"
 redis = "redis://127.0.0.1:6379/"
 
 [hosts]
-app = "http://${LOCAL_IP}"
-api = "http://${LOCAL_IP}/api"
-events = "ws://${LOCAL_IP}/ws"
-autumn = "http://${LOCAL_IP}/autumn"
-january = "http://${LOCAL_IP}/january"
+app = "https://${LOCAL_IP}"
+api = "https://${LOCAL_IP}/api"
+events = "wss://${LOCAL_IP}/ws"
+autumn = "https://${LOCAL_IP}/autumn"
+january = "https://${LOCAL_IP}/january"
 
 [rabbit]
 host = "127.0.0.1"
 port = 5672
 username = "rabbituser"
-password = "rabbitpass"
+password = "${RABBIT_PASS}"
 
 [files]
 encryption_key = "${FILES_ENCRYPTION_KEY}"
@@ -177,9 +177,18 @@ ln -sf /Revolt.toml /opt/stoatchat/Revolt.toml
 msg_ok "Created Configuration"
 
 msg_info "Configuring Nginx"
+# The web client needs a secure context: over plain http navigator.mediaDevices is undefined and it crashes on load
+create_self_signed_cert "stoatchat"
 cat <<EOF >/etc/nginx/sites-available/stoatchat
 server {
     listen 80;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    ssl_certificate /etc/ssl/stoatchat/stoatchat.crt;
+    ssl_certificate_key /etc/ssl/stoatchat/stoatchat.key;
 
     client_max_body_size 20M;
 
